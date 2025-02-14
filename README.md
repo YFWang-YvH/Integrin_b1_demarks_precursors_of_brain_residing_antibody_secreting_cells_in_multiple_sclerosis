@@ -11,7 +11,7 @@ For this project, we sorted total CD19+ B cells from thawed peripheral blood mon
 
 ---
 
-# ** CXCR3_sc_HCpaper.Rmd **
+# **CXCR3_sc_HCpaper.Rmd**
 This script analyses the three healthy donor samples from this scRNAseq dataset for the this paper. 
 
 1. matrix data are loaded into a seurat object 
