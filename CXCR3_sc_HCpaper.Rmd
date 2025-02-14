@@ -1,0 +1,777 @@
+---
+title: "CXCR3_sc_healthy_control_manuscript"
+author: 
+   name: Yifan van Hasselt
+   email: y.vanhasselt@erasmusmc.nl
+   affiliation: Erasmus Medical Centrum
+date: "`r Sys.Date()`"
+output: 
+   BiocStyle::html_document:
+      toc_float: true
+---
+__Dataset information__
+
+This script analyses three single cell RNAseq samples of healthy people. For this experiment, CD19+ B cells from healthy donors were sorted out and each sample was run separately. We performed 5' scRNAseq runs using the 10x Genomics platform using Next-GEM v2 reagents. The main research question for this paper is the difference in gene expression between CXCR3 positive and negative cells as manuscript figure 1.
+
+<br>
+
+| Sample_ID| Condition       | sex | age | 
+| :--------| :-------------- | :-- | :---| 
+| HC_1     | healthy_control |  F  | 48  | 
+| HC_2     | healthy_control |  F  | 27  | 
+| HC_3     | healthy_control |  F  | 30  | 
+
+<br>
+
+```{r setup, include=FALSE}
+require("knitr")
+knitr::opts_chunk$set(
+	echo = TRUE,
+	message = TRUE,
+	warning = TRUE
+)
+
+outDir = "/home/lety/data/CBBI_Projects/CXCR3+_Bcell_scRNAseq_Kirsten/processed/yvanhasselt"
+figDir = paste0(outDir, "/Figures")
+ifelse(!dir.exists(outDir), dir.create(outDir), "Directory Exists")
+ifelse(!dir.exists(figDir), dir.create(figDir), "Directory Exists")
+
+knitr::opts_knit$set(root.dir = outDir) # set work directory to your folder that contains data 
+
+gc() # free up memory and report the memory usage
+options(max.print = .Machine$integer.max, scipen = 999, stringsAsFactors = F, dplyr.summarise.inform = F) # avoid truncated output in R console and scientific notation
+```
+
+# load or install packages
+```{r load packages, echo=TRUE, message=FALSE, warning=FALSE}
+## Install pacman library if not installed
+if ( !require("pacman", character.only = TRUE)) {install.packages("pacman", dependencies = TRUE, quiet = TRUE) }
+
+## Load and install libraries using pacman
+pacman::p_load("Azimuth","data.table","DOSE","dplyr", "tidyr", "tidyverse", "ggbreak","ggplot2", "ggplotify", "ggpmisc","ggrepel", "gridExtra", "igraph", "Matrix", "Seurat", "patchwork", "SeuratData","stringr", "reticulate", "leiden", "future") 
+
+'%notin%' <- Negate('%in%')
+```
+
+# load matrix data into seurat objects
+
+```{r load matrix data into seurat objects, echo=TRUE}
+# # sample ids
+# sample_id = c("HC_1","HC_2","HC_3")
+# 
+# # path to the matrix data
+# path = c("/path/to/HC_1",
+#          "/path/to/HC_2",
+#          "/path/to/HC_3")
+# 
+# CXCR3_sc.raw = list()
+# 
+# for (a in 1:length(sample_id)) {
+#   data_dir = path[a]
+#   list.files(data_dir)
+#   
+#   # add in information to filter genes that need to expression in at least one cell
+#   seurat_object = CreateSeuratObject(counts =  Read10X(data.dir = data_dir), 
+#                                      min.cells = 1,
+#                                  assay = "RNA",
+#                                  project = sample_id[a])
+#   
+#   ## Add prefix to cell IDs (convenient for merging later)
+#   seurat_object = Seurat::RenameCells(object=seurat_object, add.cell.id = sample_id[a])
+# 
+#   CXCR3_sc.raw[[a]] = seurat_object
+#   rm(seurat_object)
+# }
+# 
+# names(CXCR3_sc.raw) = sample_id
+# 
+# # merge all samples into a single Seurat object
+# CXCR3_sc = merge(CXCR3_sc.raw[[1]],
+#                      y = c(CXCR3_sc.raw[[2]],CXCR3_sc.raw[[3]]),
+#                      project = "CXCR3_HC_project")
+# 
+# # join all layers
+# CXCR3_sc[['RNA']] <- SeuratObject::JoinLayers(object = CXCR3_sc[['RNA']])
+# 
+# ## Add metadata
+# CXCR3_sc@meta.data <- CXCR3_sc@meta.data %>%
+#   dplyr::mutate(condition = "HC", gender = "F",
+#                 age = case_when(orig.ident %in% c("HC_1") ~ "48",
+#                                 orig.ident %in% c("HC_2") ~ "27",
+#                                 orig.ident %in% c("HC_3") ~ "30"))
+# 
+# rm(CXCR3_sc.raw)
+
+#saveRDS(CXCR3_sc, file = paste0(outDir, "/CXCR3_sc_raw_seurat.rds"))
+
+CXCR3_sc = readRDS(file = paste0(outDir, "/CXCR3_sc_raw_seurat.rds"))
+```
+
+# raw data quality check
+
+ * nFeature_RNA: the number of genes detected per cell.
+ * nCount_RNA: the total number of molecules (UMI) detected per cell.
+ * percent.mt: the percentage of mitochondrial genes starting with mt-.
+
+## pre-filtering visualization
+```{r pre-filtering visualization, echo=TRUE, fig.width=12, fig.height=12, fig.align = "center"}
+
+# compute the percentage of transcripts that map to mitochondrial genes, ribosomal genes
+CXCR3_sc[["percent.mt"]] <- Seurat::PercentageFeatureSet(CXCR3_sc, pattern = "^MT-") /100 # mitochondrial gene ratio
+CXCR3_sc[["percent.rb"]] <- Seurat::PercentageFeatureSet(CXCR3_sc, pattern = "^RP[SL]")
+CXCR3_sc[["percent.malat1"]] <- Seurat::PercentageFeatureSet(CXCR3_sc, pattern = "MALAT1") # check for apoptotic signatures
+CXCR3_sc[["percent.hemoglobin"]] <- Seurat::PercentageFeatureSet(CXCR3_sc, pattern = "^HB[^(P)]") # check for red blood cell
+
+# calculate number of genes per UMI for each cell - for better comparison between samples - indicates the complexity if more genes detected per UMI
+CXCR3_sc$log10GenesPerUMI <- log10(CXCR3_sc$nFeature_RNA) / log10(CXCR3_sc$nCount_RNA)
+
+## Colors for 3 conditions for plotting
+colors.condition = c("lightgreen", "#CDD272", "#2A6E35" )
+
+# number of cell counts per sample 
+plot1 = CXCR3_sc@meta.data %>%
+  	ggplot(aes(x=orig.ident, fill = orig.ident)) +
+  	geom_bar() +
+  	theme_classic() +
+    scale_fill_manual(values = colors.condition)+
+  	theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("NCells")
+
+# Visualize the number UMIs/transcripts per cell
+plot2 = CXCR3_sc@meta.data %>%
+  	ggplot(aes(color=orig.ident, x=nCount_RNA, fill= orig.ident)) +
+  	geom_density(alpha = 0.2) +
+  	scale_x_log10() +
+  	theme_classic() +
+  	ylab("Cell density") +
+  	geom_vline(xintercept = 500) # UMI counts per cell should be more than 500
+
+# Visualize the distribution of genes detected per cell via boxplot
+plot3 = CXCR3_sc@meta.data %>%
+  	ggplot(aes(x=orig.ident, y=log10(nFeature_RNA), fill=orig.ident)) +
+  	geom_boxplot() +
+  	theme_classic() +
+  	theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust=1)) +
+  	theme(plot.title = element_text(hjust=0.5, face="bold")) +
+  	ggtitle("Numbers of genes per cell")
+
+# Visualize the correlation between genes detected and number of UMIs, coloured by the fraction of mitochondrial reads
+plot4 = CXCR3_sc@meta.data %>%
+  	ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color = percent.mt)) +
+  	geom_point() +
+	  scale_colour_gradient(low = "gray90", high = "black") +
+  	stat_smooth(method=lm) +
+  	scale_x_log10() +
+  	scale_y_log10() +
+  	theme_classic() +
+    geom_vline(xintercept = 500) +
+  	geom_hline(yintercept = 250) 
+
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI
+plot5 = CXCR3_sc@meta.data  %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = orig.ident, fill=orig.ident)) +
+  	geom_density(alpha = 0.2) +
+  	theme_classic() +
+  	geom_vline(xintercept = 0.8)
+
+# Visualize the mitochondrial counts ratio
+plot6 = CXCR3_sc@meta.data %>%
+  	ggplot(aes(x=percent.mt, color=orig.ident, fill = orig.ident)) +
+    geom_density(alpha = 0.2) +
+  	scale_x_log10() +
+  	theme_classic() +
+  	geom_vline(xintercept = 0.2)
+
+# visualize feature on feature relationships
+plot7 = FeatureScatter(CXCR3_sc, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", raster = F)
+
+# pdf(file = paste0(figDir, "/prefiltering_visualization.pdf"), width = 12, height = 12)
+
+plot((plot1 | plot2 | plot3 | plot4)/(plot5 | plot6 | plot7))
+
+# dev.off()
+```
+
+
+## Violin visualization of original unfiltered data by sample
+
+```{r quality check - volin plot by sample, echo=TRUE, fig.width=10, fig.height=10,  fig.align = "center"}
+
+# visualize QC metrics by sample
+plot1 = VlnPlot(CXCR3_sc,layer = "counts", features = c("nFeature_RNA","nCount_RNA", "percent.mt", "percent.rb","percent.malat1", "percent.hemoglobin"),
+        raster = F, ncol = 3, pt.size = 0.1, alpha = 0.2)
+
+# pdf(file = paste0(figDir, "/prefiltering_volinplot.pdf"),  width = 10, height = 10)
+
+plot1
+
+# dev.off()
+```
+# pre-processing data filtering 
+
+```{r data filtering, echo=TRUE}
+#data filter at cell level
+dim(CXCR3_sc) # before filtering: 23303 25514
+
+# change percent mitochondrial filter back to 0.25, rather have some noise than miss out info
+CXCR3_sc_filtered = subset(CXCR3_sc, subset = nFeature_RNA > 300 & nCount_RNA > 500 & percent.mt < 0.25 & percent.rb >10)
+dim(CXCR3_sc_filtered) # after filtering: 23303 24267
+```
+
+## post-filtering visualization
+
+```{r post-filtering visualization, echo=TRUE, fig.width=15, fig.height=15, fig.align = "center"}
+
+# Number of cells before and after filtering
+before_filtering = table(CXCR3_sc$orig.ident) %>% as.data.frame()%>%
+  mutate(stage = "raw", sample_id = unique(CXCR3_sc@meta.data$orig.ident))
+after_filtering = table(CXCR3_sc_filtered$orig.ident) %>% as.data.frame() %>%
+  mutate(stage = "filtered", sample_id = unique(CXCR3_sc_filtered@meta.data$orig.ident))
+df = rbind(before_filtering, after_filtering)
+
+df$Var1 = as.factor(df$Var1)
+df$stage = factor(df$stage, levels = c("raw", "filtered"))
+
+# number of cell counts per sample labeled by condition
+plot1 = ggplot(df, aes(x = sample_id, y = Freq, color = stage)) +
+  geom_point()  + theme_bw() +
+  ggtitle("NCells")
+
+# Visualize the correlation between genes detected and number of UMIs, coloured by the fraction of mitochondrial reads
+plot2 = CXCR3_sc_filtered@meta.data %>%
+  	ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color = percent.mt)) +
+  	geom_point() +
+	  scale_colour_gradient(low = "gray90", high = "black") +
+  	stat_smooth(method=lm) +
+  	scale_x_log10() +
+  	scale_y_log10() +
+  	theme_classic() +
+    geom_vline(xintercept = 500) +
+  	geom_hline(yintercept = 250) 
+
+# visualize feature on feature relationships
+plot3 = FeatureScatter(CXCR3_sc_filtered, feature1 = "nCount_RNA", feature2 = "nFeature_RNA", raster = F)
+
+plot4 = VlnPlot(CXCR3_sc_filtered,layer = "counts", features = c("nFeature_RNA","nCount_RNA", "percent.mt", "percent.rb","percent.malat1", "percent.hemoglobin"),
+        raster = F, ncol = 3, pt.size = 0.1, alpha = 0.2)
+
+rm(before_filtering, after_filtering, df)
+
+# pdf(file =  paste0(figDir, "/postfilteing_visualization.pdf"), width = 15, height = 15)
+
+plot((plot1 | plot2 | plot3)/plot4)
+
+# dev.off()
+
+# saveRDS(CXCR3_sc_filtered, file = paste0(outDir, "/CXCR3_sc_filtered_seurat.rds"))
+rm(CXCR3_sc)
+```
+
+# data normalization and reduce dimensionality 
+
+```{r data normalization and reduce dimensionality, echo=TRUE, fig.height=15, fig.width=15, fig.align = "center", message=FALSE, warning=FALSE}
+# reload the data
+CXCR3_sc_filtered = readRDS(file = paste0(outDir, "/CXCR3_sc_filtered_seurat.rds"))
+
+# Normalize RNA data with log normalization
+CXCR3_sc_filtered = NormalizeData(CXCR3_sc_filtered, normalization.method = "LogNormalize")
+
+# identify highly variable features - 2000
+CXCR3_sc_filtered = FindVariableFeatures(CXCR3_sc_filtered, nfeatures = 2000, selection.method = "vst",
+                                             loess.span = 0.3, clip.max = "auto")
+
+## have a look at the top 10 most highly variable genes
+top10 = head(VariableFeatures(CXCR3_sc_filtered),10)
+
+p1 = VariableFeaturePlot(CXCR3_sc_filtered)
+plot1 = LabelPoints(plot = p1, points = top10, repel = T, xnudge = 0,
+  ynudge = 0)
+
+# check the distribution of top HVGs to ensure that the variance estimate is not being dominated by one or two outlier cells
+plot2=VlnPlot(CXCR3_sc_filtered,  features = top10,split.by = "orig.ident", pt.size = 0.1, alpha = 0.2)
+
+# scaling the data - shift and scale the expression of each genes - gives equal weight in downstream analysis so that highly-expressed genes do not dominate
+CXCR3_sc_filtered = ScaleData(CXCR3_sc_filtered, features = VariableFeatures(CXCR3_sc_filtered))
+
+# linear dimensional reduction with PCA
+CXCR3_sc_filtered = RunPCA(CXCR3_sc_filtered, features = VariableFeatures(CXCR3_sc_filtered))
+
+# determine the dimensionality of the dataset - how many components to include?
+plot3 = ElbowPlot(CXCR3_sc_filtered, reduction = "pca", ndims = 50) # majority of true signals before the first 20?
+
+# extract information from seurat object
+mat = Seurat::GetAssayData(CXCR3_sc_filtered, assay = "RNA", layer = "scale.data")
+pca = CXCR3_sc_filtered[["pca"]]
+
+# get the total variance:
+total_variance = sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev) ^2 ## Eigenvalues
+varExplained_percentage = (eigValues/total_variance)*100/sum(eigValues/total_variance)
+
+cumulative.proportion = round(cumsum(varExplained_percentage),2)
+
+# Find significant PCs - calculate the optimal minimum number of PCs to include
+  percent_stdv <- (pca@stdev/sum(pca@stdev)) * 100
+  cumulative <- cumsum(percent_stdv)
+  co1 <- which(cumulative > 90 & percent_stdv < 5)[1] 
+  co2 <- sort(which((percent_stdv[1:length(percent_stdv) - 1] - 
+                       percent_stdv[2:length(percent_stdv)]) > 0.1), 
+              decreasing = T)[1] + 1
+  min_pc <- min(co1, co2) # 13
+  print(paste0("optimal minimum number of PCs to include is ", min_pc ))
+
+  # form a dataframe with numbers of PC and percentage of variance explained each
+PCA_var = data.frame(PC = seq(1:50),
+                sd = pca@stdev,
+                varExplained = varExplained_percentage,
+                CumulProportion = cumulative.proportion)
+
+plot4 = ggplot(data = PCA_var, aes(x =PC))+
+  geom_bar(aes(y=varExplained), stat = "identity", fill = "blue")+
+  geom_point(aes(y=CumulProportion))+
+  geom_line(aes(y=CumulProportion))+
+  scale_y_continuous("variance explained (%)", sec.axis = sec_axis(~. *1, name = "cumulative proportion of variance explained (%)"))+
+  labs(x = "principal component (PC)")+
+  geom_hline(yintercept = c(85), linetype = "dashed", color = "red")+
+  theme_bw()  # around 35PC for 85% variance
+
+
+# pdf(file =  paste0(figDir, "/reduce_dimensionality_visualization.pdf"),  width = 15, height = 15)
+
+plot((plot1 | plot3 | plot4) / plot2 )
+
+# dev.off()
+
+rm(mat, pca, total_variance, eigValues, varExplained_percentage, cumulative.proportion,
+   percent_stdv, cumulative, co1, co2, min_pc, PCA_var)
+```
+
+```{r, fig.width=12, fig.height=12, fig.align = "center"}
+# pdf(file =  paste0(figDir, "/PCA1-20.pdf"),  width = 12, height = 12)
+
+DimHeatmap(CXCR3_sc_filtered, dims = 1:20, cells = 500, balanced = T)
+
+# dev.off()
+```
+
+```{r, fig.width=12, fig.height=12, fig.align = "center"}
+# pdf(file = paste0(figDir, "/PCA20-40.pdf"),  width = 12, height = 12)
+
+DimHeatmap(CXCR3_sc_filtered, dims = 20:40, cells = 500, balanced = T)
+
+# dev.off()
+```
+# cell clustering
+
+We used non-integration method to briefly check how the data perform with different no. PCs and what the markers for each PCs are. Then continued directly with integration method for further analysis.
+
+## without integration
+```{r cell cluster, echo=TRUE, message=FALSE, warning=FALSE}
+# to find out numbers of PC - we explored 20,25,30 PCs
+# PC = 30
+CXCR3_sc_filtered = FindNeighbors(CXCR3_sc_filtered, reduction = "pca",graph.name = c("NN", "SNN"), dims = 1:30)
+
+CXCR3_sc_filtered = FindClusters(CXCR3_sc_filtered, cluster.name = "unintegrated",  graph.name = "SNN", resolution = 0.8, algorithm = 4, method = "igraph") 
+
+# non-linear dimensional reduction to visualize and explore dataset
+CXCR3_sc_filtered = RunUMAP(CXCR3_sc_filtered, dims = 1:30, reduction = "pca",
+                                reduction.name = "umap.unintegrated")
+CXCR3_sc_filtered = RunAzimuth(CXCR3_sc_filtered, reference = "pbmcref", umap.name = "ref.umap", query.modality = "RNA")
+```
+```{r, fig.width=15, fig.height=8}
+# pdf(file = paste0(figDir, "/umap_pca30.pdf"), width = 15, height = 8)
+
+DimPlot(CXCR3_sc_filtered, reduction = "umap.unintegrated", group.by = c("seurat_clusters","predicted.celltype.l2"), label =T, label.size = 4, repel = T, ncol = 2) + NoLegend()
+
+# dev.off()
+```
+
+```{r, fig.width=15, fig.height=15, fig.align = "center"}
+# finding cluster biomarkers
+# pdf(file = paste0(figDir, "/allmarkers_pca30.pdf"), width = 15, height = 15)
+
+pca30_markers = FindAllMarkers(CXCR3_sc_filtered, only.pos = T, verbose = F)
+pca30_markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 10) %>%
+    ungroup() -> top10
+DoHeatmap(CXCR3_sc_filtered, features = top10$gene) + NoLegend()
+
+# dev.off()
+```
+
+## with integration
+
+help to match shared cell types and states across datasets and boost statistical power, more comparative analysis across datasets comparing cell type specific responses to stimulation
+
+```{r integration clustering, fig.width=15, fig.height=15, fig.align = "center"}
+
+# # split layers before integration
+# CXCR3_sc_filtered[["RNA"]] = split(CXCR3_sc_filtered[["RNA"]], f = CXCR3_sc_filtered$orig.ident)
+# 
+# # RPCA integration - anchor based # https://satijalab.org/seurat/archive/v3.0/integration.html
+# 
+# # parallel processing # https://satijalab.org/seurat/archive/v3.0/future_vignette.html
+# # plan("multicore", workers = 4) # not supported v ia R studio (considered unstable)
+# options(future.globals.maxSize = 20000 * 1024 ^ 2)
+# 
+# CXCR3_integrated = IntegrateLayers(object = CXCR3_sc_filtered, method = RPCAIntegration,
+#                                            orig.reduction = "pca", new.reduction = "integrated.rpca")
+# 
+# # Join layer
+# CXCR3_integrated = JoinLayers(CXCR3_integrated)
+# 
+# # after integration
+# CXCR3_integrated = FindNeighbors(CXCR3_integrated, reduction = "integrated.rpca", graph.name = c("NN","SNN"), dims = 1:30)
+# 
+# CXCR3_integrated = FindClusters(CXCR3_integrated, cluster.name = "integrated_clusters",
+#                                      graph.name = "SNN", resolution = 0.8,
+#                                      algorithm = 4, method = "igraph")
+# CXCR3_integrated = RunUMAP(CXCR3_integrated, dims = 1:31, reduction = "integrated.rpca",
+#                                 reduction.name = "umap.integrated")
+# 
+# CXCR3_integrated = RunAzimuth(CXCR3_integrated, reference = "pbmcref", umap.name = "ref.umap.integrated", query.modality = "RNA")
+
+# saveRDS(CXCR3_integrated, file = paste0(outDir, '/CXCR3_integrated_seurat.rds'))
+
+# reload saved integrated seurat object
+CXCR3_integrated = readRDS(file = paste0(outDir, '/CXCR3_integrated_seurat.rds'))
+```
+
+### integration QC with UMAP by condition
+
+```{r integration QC by condition, fig.height=15, fig.width=15, fig.align = "center", message=FALSE, warning=FALSE}
+
+Idents(CXCR3_integrated) = "integrated_clusters"
+
+plot1 = DimPlot(CXCR3_integrated, reduction = "umap.unintegrated", split.by = "orig.ident", label =T)
+plot2 = DimPlot(CXCR3_integrated, reduction = "umap.integrated", split.by = "orig.ident", label =T)
+
+plot3 = DimPlot(CXCR3_integrated, reduction = "umap.integrated", group.by = c("predicted.celltype.l2"), split.by = "orig.ident", label =T, label.size = 4, repel = T) + NoLegend()
+
+plot4 = FeaturePlot(CXCR3_integrated, features = c("nFeature_RNA", "nCount_RNA", "percent.mt", "percent.rb"),
+            ncol = 2, reduction = "umap.integrated", slot = "data", order = T,
+            label = T, label.size = 4, repel = T)
+
+#  pdf(file = paste0(figDir, "/integration_QC_umap.pdf"),  width = 15, height = 15)
+
+plot1 + plot2 + plot3 + plot4
+
+# dev.off()
+```
+
+### integration clustering QC and filtering
+```{r, fig.width=15, fig.height=18, fig.align = "center"}
+# QC and filtering based on clustering
+GOI = c("CD3E", "CD3D","S100A9") # CD3E & CD3D are T cell markers, should be zero, S100A9 is monocytes markers should also not be there
+
+# Feature plot - visualize feature expression in low-dimensional space
+p1 = FeaturePlot(CXCR3_integrated, features = GOI)  
+
+# Violin plot - Visualize single cell expression distributions in each cluster
+p2 = VlnPlot(CXCR3_integrated, features = GOI) # cluster 20 should be filtered out
+
+p3 = DotPlot(CXCR3_integrated, features = GOI) + RotatedAxis()
+
+# filter out T cells 
+CXCR3_integrated_filtered = subset(CXCR3_integrated, subset = CD3E == 0 & CD3D ==0 )
+dim(CXCR3_integrated_filtered) # 23303 24233
+dim(CXCR3_integrated) #23303 24267
+
+# find all markers of cluster 20 - to remove or not to 
+cluster20.markers <- FindMarkers(CXCR3_integrated_filtered, ident.1 = 20, verbose = F)
+cluster20.markers %>%
+    dplyr::filter(avg_log2FC > 1)%>%
+    slice_head(n = 10)-> top10
+
+cluster20 = subset(CXCR3_integrated_filtered, subset = seurat_clusters==20)
+
+dim(cluster20) # 23303    13
+
+p4 = FeaturePlot(cluster20, features=rownames(top10)) # mainly monocytes/marcophage markers, remove this cluster
+
+CXCR3_integrated_filtered = subset(CXCR3_integrated_filtered, subset = seurat_clusters!=20)
+dim(CXCR3_integrated_filtered) # 23303 24220
+
+# Violin plot - Visualize single cell expression distributions in each cluster
+p5= VlnPlot(CXCR3_integrated_filtered, features = GOI) # cluster 18 should be filtered out
+
+p6 = FeaturePlot(CXCR3_integrated_filtered, features = "S100A9")
+
+plot( p2 / p4 / (p5 | p6 ))
+```
+## re-clustering post filtering 
+
+```{r fig.height=8, fig.width=8, fig.align = "center", message=FALSE, warning=FALSE}
+# Normalize RNA data with log normalization
+CXCR3_integrated_filtered = NormalizeData(CXCR3_integrated_filtered, normalization.method = "LogNormalize")
+
+# identify highly variable features - 2000
+CXCR3_integrated_filtered = FindVariableFeatures(CXCR3_integrated_filtered, nfeatures = 2000, selection.method = "vst", loess.span = 0.3, clip.max = "auto")
+
+# scaling the data 
+CXCR3_integrated_filtered = ScaleData(CXCR3_integrated_filtered, features = VariableFeatures(CXCR3_integrated_filtered))
+
+# linear dimensional reduction with PCA
+CXCR3_integrated_filtered = RunPCA(CXCR3_integrated_filtered, features = VariableFeatures(CXCR3_integrated_filtered))
+
+# determine the dimensionality of the dataset - how many components to include?
+p1 = ElbowPlot(CXCR3_integrated_filtered, reduction = "pca", ndims = 50) # majority of true signals before the first 20?
+
+# extract information from seurat object
+mat = Seurat::GetAssayData(CXCR3_integrated_filtered, assay = "RNA", layer = "scale.data")
+pca = CXCR3_integrated_filtered[["pca"]]
+
+# get the total variance:
+total_variance = sum(matrixStats::rowVars(mat))
+
+eigValues = (pca@stdev) ^2 ## Eigenvalues
+varExplained_percentage = (eigValues/total_variance)*100/sum(eigValues/total_variance)
+
+cumulative.proportion = round(cumsum(varExplained_percentage),2)
+
+# Find significant PCs - calculate the optimal minimum number of PCs to include
+  percent_stdv <- (pca@stdev/sum(pca@stdev)) * 100
+  cumulative <- cumsum(percent_stdv)
+  co1 <- which(cumulative > 90 & percent_stdv < 5)[1] 
+  co2 <- sort(which((percent_stdv[1:length(percent_stdv) - 1] - 
+                       percent_stdv[2:length(percent_stdv)]) > 0.1), 
+              decreasing = T)[1] + 1
+  min_pc <- min(co1, co2) # 12
+  print(paste0("optimal minimum number of PCs to include is ", min_pc ))
+
+  # form a dataframe with numbers of PC and percentage of variance explained each
+PCA_var = data.frame(PC = seq(1:50),
+                sd = pca@stdev,
+                varExplained = varExplained_percentage,
+                CumulProportion = cumulative.proportion)
+
+p2 = ggplot(data = PCA_var, aes(x =PC))+
+  geom_bar(aes(y=varExplained), stat = "identity", fill = "blue")+
+  geom_point(aes(y=CumulProportion))+
+  geom_line(aes(y=CumulProportion))+
+  scale_y_continuous("variance explained (%)", sec.axis = sec_axis(~. *1, name = "cumulative proportion of variance explained (%)"))+
+  labs(x = "principal component (PC)")+
+  geom_hline(yintercept = c(85), linetype = "dashed", color = "red")+
+  theme_bw()  # around 35PC for 85% variance
+
+wrap_plots(p1 + p2)
+
+rm(mat, pca, total_variance, eigValues, varExplained_percentage, cumulative.proportion,
+   percent_stdv, cumulative, co1, co2, min_pc, PCA_var)
+```
+
+```{r, fig.width=12, fig.height=12, fig.align = "center"}
+# pdf(file = paste0(figDir, "/PCA1-20_integrated_filtered.pdf"),  width = 12, height = 12)
+
+DimHeatmap(CXCR3_integrated_filtered, dims = 1:20, cells = 500, balanced = T)
+
+# dev.off()
+```
+
+```{r, fig.width=12, fig.height=12, fig.align = "center"}
+# pdf(file = paste0(figDir, "/PCA20-40_integrated_filtered.pdf"),  width = 12, height = 12)
+
+DimHeatmap(CXCR3_integrated_filtered, dims = 20:40, cells = 500, balanced = T) # PC31
+
+# dev.off()
+
+```
+
+```{r, fig.width=12, fig.height=12, fig.align = "center"}
+# # PC defined now as 24, based on inspection of top markers of PCs and after clustering markers for each clusters
+# CXCR3_integrated_filtered[["RNA"]] = split(CXCR3_integrated_filtered[["RNA"]], f = CXCR3_integrated_filtered$orig.ident)
+# 
+# # RPCA integration - anchor based # https://satijalab.org/seurat/archive/v3.0/integration.html
+# 
+# # parallel processing # https://satijalab.org/seurat/archive/v3.0/future_vignette.html
+# # plan("multicore", workers = 4) # not supported v ia R studio (considered unstable)
+# options(future.globals.maxSize = 20000 * 1024 ^ 2)
+# 
+# CXCR3_integrated_filtered = IntegrateLayers(object = CXCR3_integrated_filtered, method = RPCAIntegration,
+#                                            orig.reduction = "pca", new.reduction = "integrated.rpca")
+# 
+# # Join layer
+# CXCR3_integrated_filtered = JoinLayers(CXCR3_integrated_filtered)
+# 
+# # after integration
+# CXCR3_integrated_filtered = FindNeighbors(CXCR3_integrated_filtered, reduction = "integrated.rpca", graph.name = c("NN","SNN"), dims = 1:24)
+# 
+# CXCR3_integrated_filtered = FindClusters(CXCR3_integrated_filtered, cluster.name = "integrated_clusters",
+#                                      graph.name = "SNN", resolution = 0.8,
+#                                      algorithm = 4, method = "igraph")
+# CXCR3_integrated_filtered = RunUMAP(CXCR3_integrated_filtered, dims = 1:24, reduction = "integrated.rpca",
+#                                 reduction.name = "umap.integrated")
+# 
+# CXCR3_integrated_filtered = RunAzimuth(CXCR3_integrated_filtered, reference = "pbmcref", umap.name = "ref.umap.integrated", query.modality = "RNA")
+# 
+# # saveRDS(CXCR3_integrated_filtered, file = paste0(outDir, '/CXCR3_integrated_filtered_seurat.rds'))
+
+rm(CXCR3_integrated)
+
+# reload integrated filtered object
+CXCR3_integrated_filtered = readRDS(file = paste0(outDir, '/CXCR3_integrated_filtered_seurat.rds'))
+
+pca24_markers = FindAllMarkers(CXCR3_integrated_filtered, only.pos = T, verbose = F)
+pca24_markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 10) %>%
+    ungroup() -> top10
+DoHeatmap(CXCR3_integrated_filtered, features = top10$gene) + NoLegend()
+
+```
+
+```{r integration QC with UMAP by interesting genes, fig.width=15, fig.height=10, fig.align = "center"}
+GOIs = c("CXCR3", "ITGB1", "TBX21", "CD86")
+
+# pdf(file = paste0(figDir, "/integration_QC_umap_GOI.pdf"),  width = 15, height = 10)
+ 
+FeaturePlot(CXCR3_integrated_filtered, features = GOIs,
+            ncol = 4, reduction = "umap.integrated", slot = "data", order = T,
+            label = T, label.size = 4, repel = T)
+
+# dev.off()
+```
+
+### UMAPs for manuscript with all cells
+```{r, fig.width=8, fig.height=8, fig.align = "center"}
+Genes_names = c("TCL1A","CD38","IGHD","CD27")
+
+p1 = FeaturePlot(CXCR3_integrated_filtered, features = Genes_names, ncol = 2,
+             reduction = "umap.integrated", slot = "data", order = T,
+            label = F, keep.scale = "all")  & NoAxes()
+
+p2 = DimPlot(CXCR3_integrated_filtered, reduction = "umap.integrated", group.by = c("predicted.celltype.l2"), label =F) & NoAxes()
+
+plot(p1/p2)
+
+# table(CXCR3_integrated_filtered$predicted.celltype.l2)
+# B intermediate       B memory        B naive    Plasmablast 
+#          8035           4288          11823             74 
+```
+
+# filter out naive B cells 
+not research interest
+```{r, fig.width=15, fig.height=10, fig.align = "center"}
+# filter out naive B cells
+unique(CXCR3_integrated_filtered$predicted.celltype.l2)
+dim(CXCR3_integrated_filtered) #23303 24220
+
+CXCR3_COI = subset(CXCR3_integrated_filtered, subset = predicted.celltype.l2!="B naive")
+dim(CXCR3_COI) #23303 12397
+
+p1 = VlnPlot(CXCR3_COI, features = "CXCR3")
+
+# add one extra column label CXCR3 positive and negative cells
+CXCR3.pos<-WhichCells(CXCR3_COI, expression=CXCR3 > 0)
+
+CXCR3_COI$CXCR3_ident <- ifelse(colnames(CXCR3_COI) %in% CXCR3.pos, "CXCR3+", "CXCR3-")
+table(CXCR3_COI$CXCR3_ident) #cxcr3- 11378 cxcr3+ 1019
+
+Idents(CXCR3_COI) = "predicted.celltype.l2"
+p2 = DimPlot(CXCR3_COI, reduction = "umap.integrated", 
+        split.by = "CXCR3_ident", label =T, label.size = 4, repel = T, ncol = 2)
+
+Idents(CXCR3_COI) = "integrated_clusters"
+p3 = DimPlot(CXCR3_COI, reduction = "umap.integrated", 
+        split.by = "CXCR3_ident", label =T, label.size = 4, repel = T, ncol = 2)
+
+
+# pdf(file = paste0(figDir, "/CXCR3_umap_integrated.pdf"),  width = 15, height = 10)
+ 
+p1 + p2 + p3
+
+# dev.off()
+rm(CXCR3_integrated_filtered)
+```
+
+## UMAPs for manuscript without naive B cells
+```{r, fig.width=5, fig.height=8, fig.align = "center"}
+Genes_names2 = c("CXCR3", "ITGB1")
+
+FeaturePlot(CXCR3_COI, features = Genes_names2, ncol = 1,
+             reduction = "umap.integrated", slot = "data", order = T,
+            label = F, keep.scale = "all")  & NoAxes()
+
+```
+
+# differential expression analysis
+
+## analysis with default seurat method
+
+After discussion, we've decided to continue with only the default seurat analysis using Wilcoxon test.
+
+```{r, fig.width=15, fig.height=10, fig.align = "center"}
+# # find genes that different between two conditions (pvalue with bias) - treat each cell as an independent replicate and ignore inherent correlations between cells from the same sample, larger number of false positive associations
+# Idents(CXCR3_COI) = "CXCR3_ident"
+# de <- FindMarkers(CXCR3_COI, ident.1 = "CXCR3+", ident.2 = "CXCR3-", verbose = FALSE)%>% rownames_to_column() %>% drop_na()
+# 
+# de$reg = ifelse(de$p_val_adj < 0.05 & de$avg_log2FC>0, "up",
+#                      ifelse(de$p_val_adj<0.05 & de$avg_log2FC< 0, "down", "ns"))
+# # write_csv(de, paste0(outDir, "/seurat_Wilcoxon_rank_sum_all_cells.csv"))
+```
+
+### Volcano plot for manuscript with all cells seurat analysis
+```{r, fig.width=15, fig.height=10, fig.align = "center"}
+de = read_csv(paste0(outDir, "/seurat_Wilcoxon_rank_sum_all_cells.csv"))
+
+de$reg = ifelse(de$p_val_adj < 0.001 & de$avg_log2FC>0, "up",
+                     ifelse(de$p_val_adj<0.001 & de$avg_log2FC< 0, "down", "ns"))
+
+de$color = ifelse(de$reg == "up" & de$avg_log2FC > 0.5, "up",
+                  ifelse(de$reg == "down" & de$avg_log2FC < -0.5, "down", "ns"))
+
+de.down = subset(de, de$reg == "down" & de$avg_log2FC < - 0.5)
+
+sig.up = c("ANXA2","TMSB4X", "ITGB1","CRIP2","IFNG-AS1",
+           "CD86","IL6R","XBP1","TBX21")
+
+de.up = subset(de, de$rowname %in% sig.up)
+
+P1 = ggplot(de, aes(x=avg_log2FC, y=-log10(p_val_adj)))+
+  geom_point(aes(color=color)) + 
+  geom_hline(yintercept = -log10(0.001),
+             linetype = "dashed") + 
+  geom_vline(xintercept = c(-0.5, 0.5),
+             linetype = "dashed") + 
+  xlim(-3,15.2)+ 
+  scale_x_continuous(breaks=c(-3,-2,-1,0,1,2,3,4))+
+  scale_color_manual(values=c("#56B4E9", "#999999", "#E69F00"))+
+  scale_x_break(breaks=c(4.5,14),ticklabels = c(14,15))+
+    labs(
+       x = "log2(fold change)",
+       y = "-log10(adjusted P-value)") +
+   geom_text(data = de.up,vjust=0,hjust = 0, check_overlap = T,
+                   aes(label = de.up$rowname))+
+   geom_text(data =de.down,  vjust=1.4,hjust = 1,
+                   aes(label = de.down$rowname))+
+  geom_text(data = subset(de, de$rowname == "CXCR3"),  aes(label = "CXCR3"), vjust=1.4, hjust =1 )+
+   theme_bw() + # Select theme with a white background  
+  theme(panel.border = element_rect(colour = "black", fill = NA, size= 0.5),    
+        panel.grid.minor = element_blank(),
+        panel.grid.major = element_blank())+
+  theme(legend.position = "none")
+
+
+ 
+# pdf(file = paste0(figDir, "/CXCR3_seurat_default.pdf"),  width = 15, height = 10)
+
+P1 
+
+# dev.off()
+
+```
+
+# session info
+```{r}
+sessionInfo()
+```
+
+
+
+
+
