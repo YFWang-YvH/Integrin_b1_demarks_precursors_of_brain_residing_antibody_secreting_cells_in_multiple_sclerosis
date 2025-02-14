@@ -31,7 +31,7 @@ knitr::opts_chunk$set(
 	warning = TRUE
 )
 
-outDir = "/home/lety/data/CBBI_Projects/CXCR3+_Bcell_scRNAseq_Kirsten/processed/yvanhasselt"
+outDir = "/path/to/your/out/directory"
 figDir = paste0(outDir, "/Figures")
 ifelse(!dir.exists(outDir), dir.create(outDir), "Directory Exists")
 ifelse(!dir.exists(figDir), dir.create(figDir), "Directory Exists")
