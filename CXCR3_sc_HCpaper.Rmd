@@ -1,9 +1,8 @@
 ---
 title: "CXCR3_sc_healthy_control_manuscript"
 author: 
-   name: Yifan van Hasselt
-   email: y.vanhasselt@erasmusmc.nl
-   affiliation: Erasmus Medical Centrum
+   name: Yifan VH
+   affiliation: ErasmusMC
 date: "`r Sys.Date()`"
 output: 
    BiocStyle::html_document:
