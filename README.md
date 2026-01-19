@@ -14,7 +14,7 @@ For this project, we sorted total CD19+ B cells from thawed peripheral blood mon
 
 ---
 
-# **CXCR3_sc_HCpaper.Rmd**
+# **[CXCR3_sc_HCpaper.Rmd](https://github.com/YFWang-YvH/Integrin_b1_demarks_precursors_of_brain_residing_antibody_secreting_cells_in_multiple_sclerosis/blob/main/CXCR3_sc_HCpaper.Rmd)**
 
 This script analyses the three healthy donor samples from this scRNAseq dataset for the this paper. 
 
