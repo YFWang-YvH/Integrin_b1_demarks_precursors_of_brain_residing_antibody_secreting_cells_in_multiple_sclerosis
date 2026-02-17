@@ -1,5 +1,7 @@
 # **Project: Integrin b1 demarks precursors of brain-residing antibody-secreting cells in multiple sclerosis**
 
+This repository contains scripts used to analyze the single-cell sequencing data, as publiched in Neurology Neuroimmunology & Neuroinflammation - Integrin β1 Demarks Precursors of Brain-Residing Antibody-Secreting Cells in Multiple Sclerosis (doi: https://doi.org/10.1212/NXI.0000000000200553)
+
 **Project background:**
 
 B cells are deemed a driving force behind the onset of multiple sclerosis (MS). We earlier found that a subset of B cells, the CXCR3+ memory B cells, are triggered to migrate to central nervous system (CNS) compartments from MS patients (Van Langelaar et al., 2021). It is hypothesized that once migrated to the CNS, these cells locally mature into the long-living antibody secreting cells (ASCs) that we detected in the MS brain (Bogers et al., 2023). It remains unclear however, what drives the migration and maturation of CXCR3+ memory B cells in MS, and what features could contribute to the subsequent local residency of ASCs in the MS brain.
